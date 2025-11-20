@@ -111,13 +111,17 @@ def main():
                 # Initialize analyzer
                 analyzer = get_analyzer()
 
-                # Calculate ATS score
-                st.info("Calculating ATS score...")
-                ats_score, score_breakdown = analyzer.calculate_ats_score(resume_data)
+                # Calculate rule-based ATS score (for reference)
+                st.info("Calculating initial ATS score...")
+                rule_based_score, rule_based_breakdown = analyzer.calculate_ats_score(resume_data)
 
-                # Get AI analysis
-                st.info("Getting AI-powered analysis...")
-                ai_analysis = analyzer.analyze_resume_with_ai(resume_data)
+                # Get AI analysis with ATS score (AI will decide the final score)
+                st.info("Getting AI-powered analysis and ATS score...")
+                ai_analysis = analyzer.analyze_resume_with_ai(resume_data, rule_based_score, rule_based_breakdown)
+
+                # Extract AI-determined ATS score and breakdown
+                ats_score = ai_analysis.get("ats_score", rule_based_score)
+                score_breakdown = ai_analysis.get("score_breakdown", rule_based_breakdown)
 
                 # Get improvement suggestions
                 suggestions = analyzer.get_improvement_suggestions(resume_data, ats_score)

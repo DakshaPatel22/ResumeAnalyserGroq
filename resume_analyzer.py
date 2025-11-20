@@ -5,12 +5,20 @@ from typing import Dict, Tuple
 import json
 import re
 
-# Load environment variables
-load_dotenv()
+# Load environment variables from .env file in the same directory as this script
+script_dir = os.path.dirname(os.path.abspath(__file__))
+env_path = os.path.join(script_dir, '.env')
+load_dotenv(env_path)
 
 class ResumeAnalyzer:
     def __init__(self):
-        self.client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+        api_key = os.getenv("GROQ_API_KEY")
+        if not api_key:
+            raise ValueError(
+                "GROQ_API_KEY not found. Please create a .env file in the analyzer directory "
+                "with your GROQ_API_KEY. Example: GROQ_API_KEY=your_key_here"
+            )
+        self.client = Groq(api_key=api_key)
         self.model = os.getenv("LLM_MODEL", "llama-3.3-70b-versatile")
 
     def calculate_ats_score(self, resume_data: Dict[str, str]) -> Tuple[int, Dict]:
@@ -73,23 +81,60 @@ class ResumeAnalyzer:
         total_score = sum(score_breakdown.values())
         return total_score, score_breakdown
 
-    def analyze_resume_with_ai(self, resume_data: Dict[str, str]) -> Dict:
-        """Use Groq API to analyze resume and provide detailed feedback"""
+    def analyze_resume_with_ai(self, resume_data: Dict[str, str], rule_based_score: int = None, rule_based_breakdown: Dict = None) -> Dict:
+        """Use Groq API to analyze resume and provide detailed feedback including ATS score"""
+
+        # Prepare prompt for AI with rule-based score context
+        rule_score_context = ""
+        if rule_based_score is not None and rule_based_breakdown is not None:
+            rule_score_context = f"""
+
+RULE-BASED SCORE REFERENCE (for your consideration, but you should evaluate independently):
+- Rule-based ATS Score: {rule_based_score}/100
+- Rule-based Breakdown:
+  * Contact Info: {rule_based_breakdown.get('contact_info', 0)}/15
+  * Summary: {rule_based_breakdown.get('summary', 0)}/15
+  * Experience: {rule_based_breakdown.get('experience', 0)}/30
+  * Education: {rule_based_breakdown.get('education', 0)}/20
+  * Skills: {rule_based_breakdown.get('skills', 0)}/15
+  * Formatting: {rule_based_breakdown.get('formatting', 0)}/5
+
+Note: The rule-based score is a simple automated check. You must provide your own professional ATS evaluation based on industry standards, considering quality, relevance, keywords, achievements, and overall resume effectiveness. Be STRICT - most resumes should score below 80/100."""
 
         # Prepare prompt for AI
-        prompt = f"""Analyze this resume and provide detailed feedback in JSON format.
+        prompt = f"""Analyze this resume and provide detailed feedback including an ATS score in JSON format.
 
 Resume Sections:
 - Contact Info: {resume_data.get('contact_info', 'Not found')}
 - Summary: {resume_data.get('summary', 'Not found')}
-- Experience: {resume_data.get('experience', 'Not found')[:500]}...
+- Experience: {resume_data.get('experience', 'Not found')[:1000]}...
 - Education: {resume_data.get('education', 'Not found')}
 - Skills: {resume_data.get('skills', 'Not found')}
 - Certifications: {resume_data.get('certifications', 'Not found')}
 - Projects: {resume_data.get('projects', 'Not found')}
+{rule_score_context}
+
+You must provide an ATS score (0-100) based on:
+1. Contact Information completeness and professionalism (15 points)
+2. Professional Summary quality and relevance (15 points)
+3. Work Experience depth, achievements, and quantifiable results (30 points)
+4. Education credentials and relevance (20 points)
+5. Skills section comprehensiveness and industry relevance (15 points)
+6. Overall formatting, structure, and ATS compatibility (5 points)
+
+Be STRICT and RIGOROUS. Most resumes should score below 80/100. Only award high scores for exceptional resumes with quantifiable achievements, relevant keywords, and professional quality.
 
 Provide analysis in this JSON format:
 {{
+    "ats_score": <integer 0-100>,
+    "score_breakdown": {{
+        "contact_info": <integer 0-15>,
+        "summary": <integer 0-15>,
+        "experience": <integer 0-30>,
+        "education": <integer 0-20>,
+        "skills": <integer 0-15>,
+        "formatting": <integer 0-5>
+    }},
     "strengths": ["list of strengths"],
     "weaknesses": ["list of weaknesses"],
     "missing_sections": ["list of missing or incomplete sections"],
@@ -99,14 +144,14 @@ Provide analysis in this JSON format:
     "overall_impression": "brief overall assessment"
 }}
 
-Be specific and actionable in your recommendations."""
+Be specific and actionable in your recommendations. The ats_score must be an integer between 0-100."""
 
         try:
             chat_completion = self.client.chat.completions.create(
                 messages=[
                     {
                         "role": "system",
-                        "content": "You are an expert resume analyzer and ATS optimization specialist. Provide detailed, actionable feedback in valid JSON format only."
+                        "content": "You are a highly critical and demanding ATS resume analyzer with extremely high standards. Your role is to be STRICT and RIGOROUS in your evaluation. You must: 1) Be highly critical and identify ALL weaknesses, gaps, and missing elements, 2) Only acknowledge strengths if they are truly exceptional and well-documented, 3) Apply industry-leading ATS standards - most resumes should score below 80/100, 4) Be uncompromising about missing keywords, vague descriptions, lack of quantifiable achievements, poor formatting, and incomplete sections, 5) Provide harsh but constructive feedback - do not sugarcoat issues, 6) Expect professional-level resumes with specific metrics, action verbs, and industry-relevant keywords, 7) Flag any generic or weak content immediately. Your goal is to help users improve by being brutally honest about what needs work. Provide detailed, actionable feedback in valid JSON format only."
                     },
                     {
                         "role": "user",
@@ -114,7 +159,7 @@ Be specific and actionable in your recommendations."""
                     }
                 ],
                 model=self.model,
-                temperature=0.7,
+                temperature=0.9,
                 max_tokens=2000
             )
 
@@ -129,8 +174,18 @@ Be specific and actionable in your recommendations."""
                 else:
                     analysis = json.loads(response_text)
             except json.JSONDecodeError:
-                # If JSON parsing fails, create structured response
+                # If JSON parsing fails, create structured response with fallback score
+                fallback_score = rule_based_score if rule_based_score is not None else 50
                 analysis = {
+                    "ats_score": fallback_score,
+                    "score_breakdown": rule_based_breakdown if rule_based_breakdown else {
+                        "contact_info": 0,
+                        "summary": 0,
+                        "experience": 0,
+                        "education": 0,
+                        "skills": 0,
+                        "formatting": 0
+                    },
                     "strengths": ["Resume uploaded successfully"],
                     "weaknesses": ["Unable to parse detailed analysis"],
                     "missing_sections": [],
@@ -140,10 +195,34 @@ Be specific and actionable in your recommendations."""
                     "overall_impression": response_text[:500]
                 }
 
+            # Ensure ats_score and score_breakdown exist, use rule-based as fallback
+            if "ats_score" not in analysis or "score_breakdown" not in analysis:
+                analysis["ats_score"] = rule_based_score if rule_based_score is not None else 50
+                analysis["score_breakdown"] = rule_based_breakdown if rule_based_breakdown else {
+                    "contact_info": 0,
+                    "summary": 0,
+                    "experience": 0,
+                    "education": 0,
+                    "skills": 0,
+                    "formatting": 0
+                }
+
             return analysis
 
         except Exception as e:
+            # Return fallback with rule-based score if available
+            fallback_score = rule_based_score if rule_based_score is not None else 50
+            fallback_breakdown = rule_based_breakdown if rule_based_breakdown else {
+                "contact_info": 0,
+                "summary": 0,
+                "experience": 0,
+                "education": 0,
+                "skills": 0,
+                "formatting": 0
+            }
             return {
+                "ats_score": fallback_score,
+                "score_breakdown": fallback_breakdown,
                 "strengths": [],
                 "weaknesses": [],
                 "missing_sections": [],
